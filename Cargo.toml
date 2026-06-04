@@ -1,0 +1,10 @@
+[package]
+name = "ternary-regex"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Pattern matching on ternary sequences with NFA, DFA, wildcard support, and NFA→DFA minimization"
+keywords = ["ternary", "regex", "pattern-matching", "dfa", "nfa"]
+categories = ["algorithms", "text-processing", "science"]
+
+[dependencies]
