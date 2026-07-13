@@ -637,4 +637,174 @@ mod tests {
         assert!(matches(&pattern, &ts(&[1, 1, -1, -1])));
         assert!(!matches(&pattern, &ts(&[1, 0, 0, 0])));
     }
+
+    // ---- Independent hand-verification of the core matching algorithm ----
+    //
+    // Pattern: [Not(Zero), Alt(Pos, Neg), Exact(Zero)]
+    //
+    // By hand, `elem_matches` gives:
+    //   elem 0 = Not(Zero)      -> accepts val != Zero  (i.e. Pos or Neg)
+    //   elem 1 = Alt(Pos, Neg)  -> accepts Pos or Neg
+    //   elem 2 = Exact(Zero)    -> accepts only Zero
+    //
+    // So the language is { X, Y, Zero : X in {Pos,Neg}, Y in {Pos,Neg} }
+    // = 2*2 = 4 accepted inputs of length 3. Concretely the accepted set is
+    //   [Pos,Pos,Zero], [Pos,Neg,Zero], [Neg,Pos,Zero], [Neg,Neg,Zero]
+    // and everything else (wrong length, a Zero in position 0 or 1, a
+    // non-Zero in position 2) is rejected. The assertions below encode that
+    // exact derivation and are checked end-to-end through NFA->DFA->minimize.
+    #[test]
+    fn test_hand_traced_not_alt_exact() {
+        let pattern = TernaryPattern::new(vec![
+            PatternElem::Not(Ternary::Zero),
+            PatternElem::Alt(Ternary::Pos, Ternary::Neg),
+            PatternElem::Exact(Ternary::Zero),
+        ]);
+        // All four accepted combinations (verified by hand above).
+        assert!(matches(&pattern, &ts(&[1, 1, 0])));
+        assert!(matches(&pattern, &ts(&[1, -1, 0])));
+        assert!(matches(&pattern, &ts(&[-1, 1, 0])));
+        assert!(matches(&pattern, &ts(&[-1, -1, 0])));
+        // Position 0 must not be Zero.
+        assert!(!matches(&pattern, &ts(&[0, 1, 0])));
+        // Position 1 must not be Zero.
+        assert!(!matches(&pattern, &ts(&[1, 0, 0])));
+        // Position 2 must be Zero.
+        assert!(!matches(&pattern, &ts(&[1, 1, 1])));
+        assert!(!matches(&pattern, &ts(&[1, 1, -1])));
+        // Wrong length.
+        assert!(!matches(&pattern, &ts(&[1, 1])));
+        assert!(!matches(&pattern, &ts(&[1, 1, 0, -1])));
+        assert!(!matches(&pattern, &ts(&[])));
+    }
+
+    // ---- Minimization that actually merges states ----
+    //
+    // Build an NFA for the language { Pos Neg, Neg Neg } = "either Pos or Neg
+    // followed by Neg". The two intermediate NFA states reachable on Pos vs
+    // Neg are behaviourally identical (both: only Neg -> accept, else dead),
+    // so subset construction yields a 4-state DFA that the minimizer must
+    // collapse to 3 states. A no-op `minimize` would leave 4 states and fail.
+    fn nfa_pos_neg_or_neg_neg() -> TernaryNFA {
+        let mut nfa = TernaryNFA::new(4);
+        nfa.add_transition(0, PatternElem::Exact(Ternary::Pos), 1);
+        nfa.add_transition(0, PatternElem::Exact(Ternary::Neg), 2);
+        nfa.add_transition(1, PatternElem::Exact(Ternary::Neg), 3);
+        nfa.add_transition(2, PatternElem::Exact(Ternary::Neg), 3);
+        nfa.set_accept(3);
+        nfa
+    }
+
+    #[test]
+    fn test_minimization_actually_merges_equivalent_states() {
+        let nfa = nfa_pos_neg_or_neg_neg();
+        let dfa = TernaryDFA::from_nfa(&nfa);
+        let min = dfa.minimize();
+        // Pre-minimization DFA has 4 states; the minimal DFA has 3.
+        assert_eq!(dfa.state_labels.len(), 4);
+        assert_eq!(min.state_labels.len(), 3);
+        assert!(min.state_labels.len() < dfa.state_labels.len());
+        // Language is preserved exactly.
+        assert!(min.accepts(&ts(&[1, -1]))); // Pos Neg
+        assert!(min.accepts(&ts(&[-1, -1]))); // Neg Neg
+        assert!(!min.accepts(&ts(&[0, -1]))); // Zero Neg
+        assert!(!min.accepts(&ts(&[1, 1]))); // Pos Pos
+        assert!(!min.accepts(&ts(&[1]))); // too short
+        assert!(!min.accepts(&ts(&[1, -1, 0]))); // too long
+    }
+
+    // ---- Minimization preserves language equivalence (property check) ----
+    #[test]
+    fn test_minimize_preserves_language() {
+        // For every reachable input up to length 4, the minimized DFA must
+        // agree with the original DFA and with the NFA.
+        let pattern = TernaryPattern::new(vec![
+            PatternElem::Alt(Ternary::Pos, Ternary::Zero),
+            PatternElem::Not(Ternary::Pos),
+        ]);
+        let nfa = TernaryNFA::from_pattern(&pattern);
+        let dfa = TernaryDFA::from_nfa(&nfa);
+        let min = dfa.minimize();
+
+        let alphabet = [Ternary::Neg, Ternary::Zero, Ternary::Pos];
+        let mut inputs: Vec<Vec<Ternary>> = vec![vec![]];
+        for _ in 0..4 {
+            let mut next = Vec::new();
+            for base in &inputs {
+                for &sym in &alphabet {
+                    let mut e = base.clone();
+                    e.push(sym);
+                    next.push(e);
+                }
+            }
+            inputs.extend(next);
+        }
+        for input in &inputs {
+            let by_nfa = nfa.accepts(input);
+            let by_dfa = dfa.accepts(input);
+            let by_min = min.accepts(input);
+            assert_eq!(by_nfa, by_dfa, "NFA vs DFA mismatch on {:?}", input);
+            assert_eq!(by_dfa, by_min, "minimize changed language on {:?}", input);
+        }
+    }
+
+    // ---- Edge cases: empty input, pattern longer than input ----
+    #[test]
+    fn test_nonempty_pattern_rejects_empty_input() {
+        let pattern = TernaryPattern::exact(&ts(&[1, 0, -1]));
+        assert!(!matches(&pattern, &ts(&[])));
+    }
+
+    #[test]
+    fn test_pattern_longer_than_input() {
+        let pattern = TernaryPattern::exact(&ts(&[1, 0, -1]));
+        assert!(!matches(&pattern, &ts(&[1, 0])));
+        assert!(!matches(&pattern, &ts(&[1])));
+    }
+
+    #[test]
+    fn test_empty_input_find_matches_is_empty() {
+        let pattern = TernaryPattern::exact(&ts(&[1]));
+        assert!(find_matches(&pattern, &ts(&[])).is_empty());
+    }
+
+    #[test]
+    fn test_nfa_accepts_empty_input_when_start_is_accepting() {
+        let mut nfa = TernaryNFA::new(1);
+        nfa.set_accept(0);
+        assert!(nfa.accepts(&ts(&[])));
+        assert!(!nfa.accepts(&ts(&[1])));
+    }
+
+    // ---- Direct elem_matches coverage (all four variants) ----
+    #[test]
+    fn test_elem_matches_all_variants() {
+        use Ternary::*;
+        assert!(TernaryPattern::elem_matches(PatternElem::Exact(Pos), Pos));
+        assert!(!TernaryPattern::elem_matches(PatternElem::Exact(Pos), Neg));
+        assert!(TernaryPattern::elem_matches(PatternElem::Any, Neg));
+        assert!(TernaryPattern::elem_matches(PatternElem::Any, Zero));
+        assert!(TernaryPattern::elem_matches(
+            PatternElem::Alt(Pos, Zero),
+            Pos
+        ));
+        assert!(TernaryPattern::elem_matches(
+            PatternElem::Alt(Pos, Zero),
+            Zero
+        ));
+        assert!(!TernaryPattern::elem_matches(
+            PatternElem::Alt(Pos, Zero),
+            Neg
+        ));
+        assert!(TernaryPattern::elem_matches(PatternElem::Not(Neg), Pos));
+        assert!(TernaryPattern::elem_matches(PatternElem::Not(Neg), Zero));
+        assert!(!TernaryPattern::elem_matches(PatternElem::Not(Neg), Neg));
+    }
+
+    #[test]
+    fn test_to_i8_roundtrip_values() {
+        assert_eq!(Ternary::Neg.to_i8(), -1);
+        assert_eq!(Ternary::Zero.to_i8(), 0);
+        assert_eq!(Ternary::Pos.to_i8(), 1);
+    }
 }
