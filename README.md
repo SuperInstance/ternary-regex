@@ -4,7 +4,7 @@ Pattern matching on ternary sequences (`-1`, `0`, `+1`) with NFA, DFA, and minim
 
 ## Why This Exists
 
-Regular expressions are one of computing's most powerful tools, but they're built for text. If you're searching ternary sensor streams, financial signals, or encoded genomic data for patterns like "+1 followed by anything then −1" or "not zero then zero," you're stuck converting to strings and back. This crate gives you a proper regex engine — Thompson's NFA construction, subset-conversion to DFA, and Hopcroft minimization — that operates directly on ternary alphabets. Wildcards, alternatives, and negated matches are first-class citizens.
+Regular expressions are one of computing's most powerful tools, but they're built for text. If you're searching ternary sensor streams, financial signals, or encoded genomic data for patterns like "+1 followed by anything then −1" or "not zero then zero," you're stuck converting to strings and back. This crate gives you a proper regex engine — Thompson's NFA construction, subset-conversion to DFA, and Moore partition-refinement minimization — that operates directly on ternary alphabets. Wildcards, alternatives, and negated matches are first-class citizens.
 
 ## Core Concepts
 
@@ -12,7 +12,7 @@ Regular expressions are one of computing's most powerful tools, but they're buil
 - **`PatternElem`** — A single pattern element: `Exact(Ternary)`, `Any` (wildcard), `Alt(a, b)` (either of two values), `Not(t)` (anything except a value).
 - **`TernaryPattern`** — A compiled sequence of `PatternElem`s.
 - **`TernaryNFA`** — Nondeterministic finite automaton with epsilon transitions, built via Thompson's construction.
-- **`TernaryDFA`** — Deterministic finite automaton with O(1) per-element matching, produced by subset construction. Supports Hopcroft minimization.
+- **`TernaryDFA`** — Deterministic finite automaton with O(1) per-element matching, produced by subset construction. Supports Moore partition-refinement minimization.
 
 ## Quick Start
 
@@ -40,10 +40,12 @@ fn main() {
     assert!(matches(&pattern, &[Ternary::Pos, Ternary::Zero, Ternary::Neg]));
     assert!(matches(&pattern, &[Ternary::Pos, Ternary::Pos, Ternary::Neg]));
 
-    // Find all matches in a stream
-    let input = vec![Ternary::Pos, Ternary::Neg, Ternary::Zero, Ternary::Pos, Ternary::Neg];
+    // Find all matches in a stream.
+    // The pattern [Pos, Any, Neg] occurs once, starting at index 3:
+    //   input[3..] = [Pos, Zero, Neg]  ->  Pos then (any=Zero) then Neg
+    let input = vec![Ternary::Pos, Ternary::Neg, Ternary::Zero, Ternary::Pos, Ternary::Zero, Ternary::Neg];
     let positions = find_matches(&pattern, &input);
-    println!("Matches at positions: {:?}", positions);
+    println!("Matches at positions: {:?}", positions); // prints [3]
 }
 ```
 
@@ -68,7 +70,7 @@ fn main() {
 
 ### DFA (low-level)
 - `TernaryDFA::from_nfa(nfa)` — Subset construction NFA→DFA
-- `dfa.minimize()` — Hopcroft minimization
+- `dfa.minimize()` — Moore partition-refinement minimization
 - `dfa.accepts(input)` — O(n) acceptance test
 - `dfa.find_all(input)` — Find all match positions in a stream
 
@@ -78,7 +80,7 @@ fn main() {
 
 **Subset construction** converts the NFA to a DFA by computing epsilon closures and tracking sets of NFA states as single DFA states. Each DFA state has exactly 3 outgoing transitions (one per ternary value), enabling O(1) lookups during matching.
 
-**Hopcroft minimization** refines a partition of {accept, reject} states by comparing transition signatures, merging indistinguishable states until no further refinement is possible. The result is the unique minimal DFA for the pattern.
+**Moore partition-refinement minimization** starts from an accept/reject partition and repeatedly splits each block by its transition signature (the block each successor lands in) until no further refinement is possible. The result is the unique minimal DFA for the pattern.
 
 ## Use Cases
 
