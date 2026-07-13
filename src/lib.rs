@@ -5,16 +5,25 @@
 //! stream matching against ternary input.
 
 #![forbid(unsafe_code)]
+#![deny(missing_docs)]
 
 /// A ternary value: Negative (-1), Zero (0), or Positive (+1).
+///
+/// The full alphabet of this crate: there are exactly three possible symbols
+/// in any pattern or input sequence.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Ternary {
+    /// Negative one (-1).
     Neg,
+    /// Zero (0).
     Zero,
+    /// Positive one (+1).
     Pos,
 }
 
 impl Ternary {
+    /// Convert this ternary value to its signed integer representation
+    /// (`-1`, `0`, or `+1`).
     pub fn to_i8(self) -> i8 {
         match self {
             Ternary::Neg => -1,
@@ -37,9 +46,11 @@ pub enum PatternElem {
     Not(Ternary),
 }
 
-/// A compiled pattern: a sequence of PatternElems.
+/// A compiled pattern: an ordered sequence of [`PatternElem`]s to match
+/// against an input, left to right.
 #[derive(Clone, Debug)]
 pub struct TernaryPattern {
+    /// The ordered sequence of pattern elements matched against an input.
     pub elements: Vec<PatternElem>,
 }
 
@@ -144,10 +155,8 @@ impl TernaryNFA {
         let mut result = Vec::new();
         for &s in states {
             for tr in &self.transitions[s] {
-                if TernaryPattern::elem_matches(tr.elem, val) {
-                    if !result.contains(&tr.target) {
-                        result.push(tr.target);
-                    }
+                if TernaryPattern::elem_matches(tr.elem, val) && !result.contains(&tr.target) {
+                    result.push(tr.target);
                 }
             }
         }
@@ -189,14 +198,16 @@ type DfaState = Vec<NfaState>;
 /// A ternary DFA for pattern matching.
 #[derive(Clone, Debug)]
 pub struct TernaryDFA {
-    /// DFA transitions: transitions[(state)][value] = target state index.
-    /// State is represented as a sorted Vec<NfaState>.
-    pub transitions: Vec<[usize; 3]>, // indexed by: 0=Neg, 1=Zero, 2=Pos
+    /// DFA transitions: `transitions[state][value_index]` gives the target
+    /// state index, where `value_index` is `0` for `Neg`, `1` for `Zero`,
+    /// and `2` for `Pos`.
+    pub transitions: Vec<[usize; 3]>,
     /// Accept states.
     pub accept: Vec<bool>,
     /// Start state index.
     pub start: usize,
-    /// State labels (sets of NFA states for each DFA state).
+    /// State labels: each entry is the sorted set of NFA states represented
+    /// by the corresponding DFA state.
     pub state_labels: Vec<DfaState>,
 }
 
@@ -274,7 +285,12 @@ impl TernaryDFA {
         current < self.accept.len() && self.accept[current]
     }
 
-    /// Minimize the DFA using Hopcroft's algorithm (partition refinement).
+    /// Minimize the DFA using Moore's partition-refinement algorithm.
+    ///
+    /// Starting from an accept/reject partition, states are repeatedly split
+    /// apart by their transition signature (the partition class each
+    /// successor lands in) until no further refinement is possible, yielding
+    /// the unique minimal DFA for the same language.
     pub fn minimize(&self) -> TernaryDFA {
         let n = self.state_labels.len();
         if n <= 1 {
@@ -319,16 +335,21 @@ impl TernaryDFA {
                 }
 
                 // Split by transition signatures
-                let mut groups: std::collections::HashMap<Vec<usize>, Vec<usize>> = std::collections::HashMap::new();
+                let mut groups: std::collections::HashMap<Vec<usize>, Vec<usize>> =
+                    std::collections::HashMap::new();
                 for &s in part {
-                    let sig: Vec<usize> = [Ternary::Neg, Ternary::Zero, Ternary::Pos].iter().map(|&val| {
-                        let idx = ternary_index(val);
-                        if s < self.transitions.len() && self.transitions[s][idx] != usize::MAX {
-                            state_partition[self.transitions[s][idx]]
-                        } else {
-                            usize::MAX
-                        }
-                    }).collect();
+                    let sig: Vec<usize> = [Ternary::Neg, Ternary::Zero, Ternary::Pos]
+                        .iter()
+                        .map(|&val| {
+                            let idx = ternary_index(val);
+                            if s < self.transitions.len() && self.transitions[s][idx] != usize::MAX
+                            {
+                                state_partition[self.transitions[s][idx]]
+                            } else {
+                                usize::MAX
+                            }
+                        })
+                        .collect();
                     groups.entry(sig).or_default().push(s);
                 }
 
@@ -381,9 +402,10 @@ impl TernaryDFA {
         for start in 0..input.len() {
             // Try to match the pattern as a prefix of input[start..]
             let mut current = self.start;
-            for (offset, &val) in input[start..].iter().enumerate() {
+            for &val in input[start..].iter() {
                 let idx = ternary_index(val);
-                if current >= self.transitions.len() || self.transitions[current][idx] == usize::MAX {
+                if current >= self.transitions.len() || self.transitions[current][idx] == usize::MAX
+                {
                     break;
                 }
                 current = self.transitions[current][idx];
@@ -524,10 +546,7 @@ mod tests {
     #[test]
     fn test_dfa_minimize() {
         // Create an NFA with potential for redundant states
-        let pattern = TernaryPattern::new(vec![
-            PatternElem::Any,
-            PatternElem::Any,
-        ]);
+        let pattern = TernaryPattern::new(vec![PatternElem::Any, PatternElem::Any]);
         let nfa = TernaryNFA::from_pattern(&pattern);
         let dfa = TernaryDFA::from_nfa(&nfa);
         let min = dfa.minimize();
